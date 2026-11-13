@@ -1,0 +1,102 @@
+name: Android APK
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["README.md", "docs/**"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Bootstrap and persist official Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper=gradle/wrapper/gradle-wrapper.jar
+          if [ ! -f "$wrapper" ]; then
+            curl --fail --location --retry 3 https://raw.githubusercontent.com/gradle/gradle/v8.13.0/gradle/wrapper/gradle-wrapper.jar -o "$wrapper"
+            test "$(git hash-object "$wrapper")" = "9bbc975c742b298b441bfb90dbc124400a3751b9"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$wrapper"
+            git commit -m "Add verified official Gradle 8.13 wrapper binary"
+            git push origin HEAD:main
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile Kotlin, run unit tests, lint and build APK
+        run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Package APK and SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/小游戏.apk"
+          cd dist
+          sha256sum "小游戏.apk" > SHA256SUMS.txt
+          git -C .. rev-parse HEAD > COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 小游戏-Android-APK
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-and-lint-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+      - name: Failure guidance
+        if: failure()
+        run: echo "::error::Android build failed. Open the first failed step and its Kotlin, JUnit or lint error; test reports are uploaded when available."
+  emulator-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/download-artifact@v4
+        with:
+          name: 小游戏-Android-APK
+          path: dist
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and launch on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: python3 scripts/smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-smoke
+          path: smoke/
+          if-no-files-found: ignore
