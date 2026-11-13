@@ -14,7 +14,9 @@ def adb(*args):
 
 def evidence():
     try:
-        (out / "logcat.txt").write_text(adb("logcat", "-d"))
+        logs = adb("logcat", "-d")
+        (out / "logcat.txt").write_text(logs)
+        print("\n".join(line for line in logs.splitlines() if "AndroidRuntime" in line), flush=True)
         with (out / "screen.png").open("wb") as stream:
             subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=stream, check=True)
     except Exception as error:
@@ -59,10 +61,19 @@ def tap_start():
     adb("shell", "input", "tap", str(width // 2), str(int(height * .53)))
 
 tap_start()
-wait_ui("游戏中")
-adb("shell", "input", "swipe", str(width // 2), str(int(height * .70)),
-    str(int(width * .63)), str(int(height * .36)), "500")
-wait_ui("回合 1")
+wait_ui("游戏中", "生命 3", "弹珠 1", "等待开球")
+# Drag the paddle horizontally while the single main ball remains attached.
+adb("shell", "input", "swipe", str(int(width * .50)), str(int(height * .79)),
+    str(int(width * .82)), str(int(height * .79)), "400")
+state = wait_ui("等待开球")
+import re
+paddle_x = int(re.search(r"挡板 (\d+)", state).group(1))
+assert 560 <= paddle_x <= 610, state
+adb("shell", "input", "swipe", str(int(width * .82)), str(int(height * .79)),
+    str(width // 2), str(int(height * .79)), "400")
+wait_ui("挡板 360")
+adb("shell", "input", "tap", str(width // 2), str(int(height * .71)))
+wait_ui("开球 1")
 with (out / "game.png").open("wb") as stream:
     subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=stream, check=True)
 adb("shell", "input", "keyevent", "KEYCODE_HOME")
@@ -73,11 +84,21 @@ adb("shell", "am", "force-stop", "com.kimizha.minigame")
 adb("shell", "am", "start", "-W", "-n", component)
 wait_ui("首页")
 tap_start()
-wait_ui("游戏中", "回合 1")
+wait_ui("游戏中", "开球 1")
 assert adb("shell", "pidof", "com.kimizha.minigame").strip()
 logs = adb("logcat", "-d")
 assert "FATAL EXCEPTION" not in logs, logs[-8000:]
-message = ("PASS: installed, launched, entered native game, fired round 1, backgrounded, "
-           "resumed paused, force-stopped and restored saved round 1. No fatal exception.")
+# Verify the real Android AtomicFile store reads an original v1 snapshot.
+adb("shell", "am", "force-stop", "com.kimizha.minigame")
+legacy = pathlib.Path("app/src/test/resources/legacy-v1.dat").read_bytes()
+subprocess.run(["adb", "shell", "-T", "run-as com.kimizha.minigame sh -c 'cat > files/game-v1.dat'"],
+               input=legacy, check=True)
+adb("shell", "am", "start", "-W", "-n", component)
+wait_ui("首页", "已解锁 27 关")
+tap_start()
+wait_ui("第 26 关", "生命 3", "弹珠 1", "等待开球")
+message = ("PASS: installed, entered paddle game, dragged paddle, launched one main ball, "
+           "backgrounded/resumed paused, restored saved serve after force-stop, and migrated original "
+           "v1 save preserving 27 unlocked levels while restarting level 26 with 3 lives and 1 ball.")
 print(message, flush=True)
 (out / "result.txt").write_text(message + "\n")

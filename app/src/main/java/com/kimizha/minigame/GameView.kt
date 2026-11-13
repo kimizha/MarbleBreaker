@@ -26,15 +26,19 @@ class GameView(context: Context) : View(context) {
     private var paused = false
     private var foreground = true
     private var dragging = false
-    private var target = Vec(360.0, 600.0)
+    private var activePointer = -1
+    private var downX = 0f
+    private var dragDistance = 0f
+    private var autosaveTime = 0.0
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val buttons = mutableListOf<Button>()
     private var pressed: Button? = null
     private val particles = mutableListOf<Particle>()
     private val toasts = mutableListOf<ToastFx>()
     private var laserLife = 0f
-    private var laserY = 0f
-    private var stockPulse = 0f
+    private val laserBeams = mutableListOf<Pair<Float, Float>>()
+    private val hitGlows = mutableListOf<Particle>()
+    private var ballPulse = 0f
     private var clock = 0L
     private var animationTime = 0.0
     private var observedPhase: Phase? = engine?.phase
@@ -52,12 +56,9 @@ class GameView(context: Context) : View(context) {
     private val muted = Color.rgb(140, 165, 197)
     private val colors = intArrayOf(0xFF53E3E8.toInt(), 0xFF75A8FF.toInt(), 0xFFB693FF.toInt(),
         0xFFFF718D.toInt(), 0xFFFFB76B.toInt(), 0xFFBEEA77.toInt())
-    private val powerColors = intArrayOf(0xFF53E3E8.toInt(), 0xFF76E89B.toInt(), 0xFFC7EB73.toInt(),
-        0xFFFFD36E.toInt(), 0xFFFF916B.toInt(), 0xFFB693FF.toInt(), 0xFFFF84D5.toInt(),
-        0xFFFF647C.toInt(), 0xFF75A8FF.toInt(), 0xFFBFD8F4.toInt())
     init {
         isFocusable = true
-        contentDescription = "小游戏。按住游戏区域拖动瞄准，松手发射弹珠。"
+        contentDescription = "小游戏。单指左右拖动控制挡板，点击开始发球，接住下落道具。"
         setOnApplyWindowInsetsListener { _, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -80,7 +81,7 @@ class GameView(context: Context) : View(context) {
     private fun start(level: Int, infinite: Boolean = false, seed: Long = level.toLong()) {
         engine = Engine(level, infinite, seed)
         if (!infinite) progress.last = level
-        observedPhase = Phase.AIM; screen = Screen.PLAY; paused = false
+        observedPhase = Phase.READY; screen = Screen.PLAY; paused = false
         particles.clear(); toasts.clear(); dragging = false; clock = 0
         save(); invalidate()
     }
@@ -93,7 +94,7 @@ class GameView(context: Context) : View(context) {
     fun back() {
         dragging = false
         when (screen) {
-            Screen.PLAY -> { if (!paused && engine?.phase in listOf(Phase.AIM, Phase.FLIGHT)) paused = true else { screen = Screen.HOME; save() } }
+            Screen.PLAY -> { if (!paused && engine?.phase in listOf(Phase.READY, Phase.PLAYING)) paused = true else { screen = Screen.HOME; save() } }
             Screen.SETTINGS -> { screen = settingsFrom; audio.updateMusic() }
             else -> { screen = Screen.HOME; save() }
         }
@@ -107,17 +108,19 @@ class GameView(context: Context) : View(context) {
         if (foreground && screen == Screen.PLAY && !paused) {
             engine?.advance(dt)
             processEvents()
+            autosaveTime += dt
+            if (autosaveTime >= 5.0) { save(); autosaveTime = 0.0 }
         }
         if (foreground && !paused) animate(dt.toFloat())
         val description = when (screen) {
-            Screen.HOME -> "小游戏 · 首页"
+            Screen.HOME -> "小游戏 · 首页；已解锁 ${progress.unlocked} 关"
             Screen.LEVELS -> "小游戏 · 关卡选择"
             Screen.SETTINGS -> "小游戏 · 设置"
             Screen.PLAY -> engine?.let { e ->
                 val state = if (paused) "暂停" else when (e.phase) {
-                    Phase.AIM -> "等待发射"; Phase.FLIGHT -> "弹珠飞行"; Phase.WON -> "通关"; Phase.LOST -> "失败"
+                    Phase.READY -> "等待开球"; Phase.PLAYING -> "持续反弹"; Phase.WON -> "通关"; Phase.LOST -> "失败"
                 }
-                "小游戏 · 游戏中；第 ${e.level} 关；回合 ${e.rounds}；弹珠 ${e.stock}；$state"
+                "小游戏 · 游戏中；第 ${e.level} 关；开球 ${e.serves}；生命 ${e.lives}；弹珠 ${e.balls.size}；挡板 ${e.paddle.x.toInt()}；$state"
             } ?: "小游戏"
         }
         if (contentDescription != description) contentDescription = description
@@ -171,18 +174,18 @@ class GameView(context: Context) : View(context) {
         decoration(c)
         text(c, "MARBLE BREAKER", 360f, 145f, 25f, cyan)
         text(c, "小游戏", 360f, 240f, 76f)
-        text(c, "一束微光，击碎整片星海", 360f, 298f, 29f, muted)
+        text(c, "左右滑动，接住每一束星光", 360f, 298f, 29f, muted)
         for (i in 0..4) rect(c, 174f + i * 78, 370f + if (i % 2 == 0) 0 else 25,
             58f, 58f, colors[i], 14f)
         circle(c, 360f, 495f + (sin(animationTime * 2) * 9).toFloat(), 13f, Color.WHITE)
-        val active = engine?.phase in listOf(Phase.AIM, Phase.FLIGHT)
+        val active = engine?.phase in listOf(Phase.READY, Phase.PLAYING)
         button(c, if (active) "继续游戏" else "开始游戏", 100f, 570f, primary = true) {
             if (active) { screen = Screen.PLAY; paused = false; clock = 0 } else start(progress.last)
         }
         button(c, "关卡选择 · ${progress.unlocked} / 30", 100f, 690f) { screen = Screen.LEVELS }
         button(c, "无限挑战", 100f, 810f) { start(1, true, System.currentTimeMillis()) }
         button(c, "设置", 100f, 930f) { settingsFrom = Screen.HOME; screen = Screen.SETTINGS }
-        text(c, "最高分 ${progress.best}    ·    离线畅玩", 360f, 1110f, 25f, muted)
+        text(c, if (saved.migrated) "已保留旧版关卡进度，对局已升级为挡板模式" else "最高分 ${progress.best}    ·    离线畅玩", 360f, 1110f, 24f, muted)
     }
     private fun levels(c: Canvas) {
         text(c, "选择关卡", 360f, 105f, 48f)
@@ -203,71 +206,66 @@ class GameView(context: Context) : View(context) {
         button(c, "震动反馈    ${if (store.vibration) "开" else "关"}", 100f, 580f) { store.vibration = !store.vibration }
         button(c, "低性能模式    ${if (store.lowPerformance) "开" else "关"}", 100f, 710f) { store.lowPerformance = !store.lowPerformance }
         text(c, "低性能模式减少粒子，并以约 30 FPS 绘制", 360f, 858f, 25f, muted)
-        text(c, "拖动瞄准 · 松手发射 · 弹珠上限 150", 360f, 910f, 25f, muted)
+        text(c, "左右拖动挡板 · 接住道具 · 弹珠上限 150", 360f, 910f, 25f, muted)
         button(c, "返回", 100f, 1020f, primary = true) { screen = settingsFrom }
     }
     private fun game(c: Canvas) {
         val e = engine ?: return
-        text(c, if (e.infinite) "无限 · 第 ${e.level} 波" else "第 ${e.level} 关", 26f, 43f, 28f, align = Paint.Align.LEFT)
-        text(c, "分数 ${e.score}", 26f, 84f, 25f, muted, Paint.Align.LEFT)
-        val size = 32f + stockPulse * 8f
-        text(c, "● × ${e.stock}", 390f, 57f, size, cyan)
-        button(c, "暂停", 602f, 5f, 110f, 96f) { paused = true; dragging = false; save() }
+        text(c, if (e.infinite) "无限 · 第 ${e.level} 波" else "第 ${e.level} 关 · ${Levels.names[(e.level - 1).coerceIn(0, 29)]}",
+            24f, 38f, 27f, align = Paint.Align.LEFT)
+        text(c, "分数 ${e.score}", 24f, 88f, 28f, muted, Paint.Align.LEFT)
+        text(c, "♥ ${e.lives}", 320f, 88f, 31f, colors[3])
+        text(c, "● ${e.balls.size}", 466f, 88f, 30f + ballPulse * 7f, cyan)
+        button(c, "暂停", 602f, 8f, 110f, 96f) { paused = true; dragging = false; save() }
         paint.color = 0xFF203853.toInt(); paint.strokeWidth = 2f
-        c.drawLine(0f, 107f, 720f, 107f, paint)
+        c.drawLine(0f, 139f, 720f, 139f, paint)
         for (b in e.bodies) if (b.alive) {
             c.save(); c.translate(b.center.x.toFloat(), b.center.y.toFloat()); c.rotate(Math.toDegrees(b.angle).toFloat())
-            val color = when (b.kind) {
-                Kind.BLOCK -> colors[((b.hp - 1) / 4).coerceIn(0, colors.lastIndex)]
-                Kind.BREAKABLE -> 0xFFD99463.toInt()
-                Kind.PADDLE -> cyan
-                Kind.MOVING -> 0xFFB693FF.toInt()
-                else -> 0xFF486382.toInt()
-            }
             val w = b.half.x.toFloat(); val h = b.half.y.toFloat()
-            rect(c, -w, -h, w * 2, h * 2, color, if (b.kind == Kind.BLOCK) 11f else 6f)
-            rect(c, -w + 5, -h + 4, w * 2 - 10, 3f, 0x45FFFFFF, 2f)
-            if (b.breakable) text(c, b.hp.toString(), 0f, 10f, 29f, navy)
-            else if (b.kind == Kind.WALL) {
-                paint.color = 0x997A99BA.toInt(); paint.strokeWidth = 3f
-                for (i in -2..2) c.drawLine(i * 16f - 7, -h + 5, i * 16f + 2, h - 5, paint)
-            } else if (b.kind == Kind.MOVING) text(c, "↔", 0f, 8f, 22f, navy)
+            rect(c, -w, -h, w * 2, h * 2, b.color, if (b.target) 3f else 5f)
+            rect(c, -w + 2, -h + 2, w * 2 - 4, 2f, 0x45FFFFFF, 1f)
+            if (b.kind == Kind.BREAKABLE) {
+                // Clearly marked gray wall durability; ordinary colored pixels never display numbers.
+                for (i in 0 until b.durability) circle(c, (i - (b.durability - 1) / 2f) * 12, 0f, 3f, navy)
+            } else if (!b.target) {
+                paint.color = 0xFF8193AC.toInt(); paint.strokeWidth = 2f
+                c.drawLine(-w + 5, -h + 3, w - 5, h - 3, paint)
+                if (b.kind == Kind.MOVING) text(c, "↔", 0f, 7f, 20f, navy)
+            }
             c.restore()
         }
         for (p in e.pickups) {
-            val col = powerColors[p.power.ordinal]
-            val pulse = 1.0 + .13 * sin(animationTime * 5)
-            circle(c, p.pos.x.toFloat(), p.pos.y.toFloat(), (26 * pulse).toFloat(), (col and 0x00FFFFFF) or 0x33000000)
-            circle(c, p.pos.x.toFloat(), p.pos.y.toFloat(), 18f, col)
-            text(c, p.power.icon, p.pos.x.toFloat(), p.pos.y.toFloat() + 8, 22f, navy)
-        }
-        if (dragging && e.phase == Phase.AIM && !paused) {
-            val pts = e.preview(target)
-            for (i in 0 until pts.size - 1) {
-                val d = pts[i + 1] - pts[i]; val length = d.length()
-                val count = (length / 22).toInt()
-                for (j in 0..count) {
-                    val pos = pts[i] + d * (j * 22 / max(length, 1.0))
-                    circle(c, pos.x.toFloat(), pos.y.toFloat(), 3f, 0x99FFFFFF.toInt())
-                }
-            }
+            val col = p.power.color; val x = p.pos.x.toFloat(); val y = p.pos.y.toFloat()
+            circle(c, x, y, (25 + 3 * sin(animationTime * 5)).toFloat(), (col and 0xFFFFFF) or 0x33000000)
+            circle(c, x, y, 18f, col)
+            text(c, p.power.icon, x, y + 8, 22f, navy)
+            text(c, "⌄", x, y + 38, 21f, col)
         }
         for (b in e.balls) {
-            if (!store.lowPerformance) {
-                val trail = b.vel.unit() * -20.0
-                circle(c, (b.pos.x + trail.x).toFloat(), (b.pos.y + trail.y).toFloat(), 5f, 0x3353E3E8)
-                circle(c, (b.pos.x + trail.x * .5).toFloat(), (b.pos.y + trail.y * .5).toFloat(), 6f, 0x6653E3E8)
+            if (!store.lowPerformance && !b.held) {
+                val trail = b.vel.unit() * -17.0
+                circle(c, (b.pos.x + trail.x).toFloat(), (b.pos.y + trail.y).toFloat(), 4f, 0x3353E3E8)
+                circle(c, (b.pos.x + trail.x * .5).toFloat(), (b.pos.y + trail.y * .5).toFloat(), 5f, 0x6653E3E8)
             }
-            circle(c, b.pos.x.toFloat(), b.pos.y.toFloat(), 7f,
-                if (b.explosion > 0) colors[3] else if (b.pierce > 0) colors[2] else Color.WHITE)
+            circle(c, b.pos.x.toFloat(), b.pos.y.toFloat(), Rules.RADIUS.toFloat(), if (b.splitCharges > 0) colors[2] else Color.WHITE)
         }
-        paint.color = 0x4453E3E8; paint.strokeWidth = 2f
-        c.drawLine(15f, (Rules.BOTTOM + 8).toFloat(), 705f, (Rules.BOTTOM + 8).toFloat(), paint)
-        circle(c, e.launcher.x.toFloat(), e.launcher.y.toFloat(), 22f, 0x3353E3E8)
-        circle(c, e.launcher.x.toFloat(), e.launcher.y.toFloat(), 10f, cyan)
-        val status = if (e.phase == Phase.AIM) "按住拖动瞄准，松手发射" else "剩余 ${e.balls.size + e.queue} 颗 · ${e.stock} 颗下回合生效"
-        text(c, status, 360f, 1149f, 27f, muted)
-        text(c, "回合 ${e.rounds} / ${e.maxRounds}    ·    目标 ${e.remaining}", 360f, 1186f, 23f, muted)
+        val px = e.paddle.x.toFloat(); val pw = e.paddle.width.toFloat(); val py = Rules.PADDLE_Y.toFloat()
+        val pc = if (e.paddle.magnetTime > 0) colors[2] else if (e.paddle.laserTime > 0) colors[3] else cyan
+        rect(c, px - pw / 2 - 5, py - 17, pw + 10, 34f, (pc and 0xFFFFFF) or 0x33000000, 17f)
+        rect(c, px - pw / 2, py - 12, pw, 24f, pc, 12f)
+        rect(c, px - pw / 2 + 12, py - 8, pw - 24, 3f, 0x99FFFFFF.toInt(), 2f)
+        if (e.paddle.laserTime > 0) for (x in listOf(px - pw / 2 + 15, px + pw / 2 - 15))
+            rect(c, x - 4, py - 19, 8f, 15f, Color.WHITE, 3f)
+        if (e.phase == Phase.READY && !paused) button(c, "点击开始", 250f, 890f, 220f, 90f, primary = true) {
+            if (e.launch()) { observedPhase = e.phase; save() }
+        }
+        val state = if (e.phase == Phase.READY) "点击开始发球 · 左右拖动挡板" else if (e.balls.any { it.held }) "磁力暂存中 · 轻点释放弹珠" else "左右拖动挡板 · 接住下落道具"
+        text(c, state, 360f, 1120f, 26f, muted)
+        val effects = listOfNotNull(
+            if (e.paddle.wideTime > 0) "加宽 ${ceil(e.paddle.wideTime).toInt()}秒" else null,
+            if (e.paddle.magnetTime > 0) "磁力 ${ceil(e.paddle.magnetTime).toInt()}秒" else null,
+            if (e.paddle.laserTime > 0) "激光 ${ceil(e.paddle.laserTime).toInt()}秒" else null).joinToString(" · ")
+        text(c, if (effects.isEmpty()) "剩余像素 ${e.remaining}  ·  开球 ${e.serves} 次" else effects, 360f, 1172f, 23f, muted)
         drawEffects(c)
         if (paused && e.phase !in listOf(Phase.WON, Phase.LOST)) pauseOverlay(c, e)
         else if (e.phase == Phase.WON || e.phase == Phase.LOST) resultOverlay(c, e)
@@ -288,8 +286,8 @@ class GameView(context: Context) : View(context) {
         val won = e.phase == Phase.WON
         text(c, if (won) "通关成功" else "再试一次", 360f, 330f, 64f, if (won) cyan else colors[3])
         text(c, "本关分数 ${e.score}", 360f, 427f, 37f)
-        text(c, "使用 ${e.rounds} 回合", 360f, 488f, 30f, muted)
-        if (!won) text(c, "目标到达底线或回合用尽", 360f, 545f, 27f, muted)
+        text(c, "开球 ${e.serves} 次 · 剩余 ${e.lives} 条生命", 360f, 488f, 30f, muted)
+        if (!won) text(c, "所有弹珠丢失，生命已用尽", 360f, 545f, 27f, muted)
         if (won) button(c, if (e.infinite) "下一波" else if (e.level < 30) "下一关" else "挑战无限模式",
             100f, 620f, primary = true) {
             if (e.infinite) start(e.level + 1, true, e.seed + 7919)
@@ -303,14 +301,17 @@ class GameView(context: Context) : View(context) {
         for (event in e.drainEvents()) {
             when (event.type) {
                 "break" -> {
-                    burst(event.pos, colors[event.amount % colors.size], if (store.lowPerformance) 5 else 14)
+                    burst(event.pos, event.color, if (store.lowPerformance) 3 else 7)
                     audio.play("break")
                     if (event.text.isNotEmpty() && event.amount % 3 == 0) { toast(event.text, event.pos); audio.play("combo") }
                 }
-                "power" -> { toast(event.text, event.pos); stockPulse = 1f; burst(event.pos, cyan, 16); audio.play("power"); vibrate(12) }
-                "laser" -> { laserY = event.pos.y.toFloat(); laserLife = .45f }
-                "explosion" -> burst(event.pos, colors[3], 18)
-                "hit" -> audio.play("hit")
+                "power" -> { toast(event.text, event.pos); ballPulse = 1f; burst(event.pos, event.color, 16); audio.play("power"); vibrate(12) }
+                "laser" -> { if (laserLife <= 0) laserBeams.clear(); laserBeams.add(event.pos.x.toFloat() to event.pos.y.toFloat()); laserLife = .18f }
+                "life" -> { toast(event.text, event.pos); vibrate(25) }
+                "hit" -> {
+                    audio.play("hit")
+                    if (hitGlows.size < 30) hitGlows.add(Particle(event.pos.x.toFloat(), event.pos.y.toFloat(), 0f, 0f, .12f, cyan, 13f))
+                }
                 "shot" -> audio.play("shot")
                 "win" -> {
                     audio.play("win"); vibrate(35)
@@ -347,8 +348,9 @@ class GameView(context: Context) : View(context) {
         }
     }
     private fun animate(dt: Float) {
-        stockPulse = max(0f, stockPulse - dt * 2)
+        ballPulse = max(0f, ballPulse - dt * 2)
         laserLife = max(0f, laserLife - dt)
+        hitGlows.forEach { it.life -= dt }; hitGlows.removeAll { it.life <= 0 }
         for (p in particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt }
         particles.removeAll { it.life <= 0f }
         for (t in toasts) { t.life -= dt; t.y -= dt * 35 }
@@ -358,33 +360,45 @@ class GameView(context: Context) : View(context) {
         for (p in particles) circle(c, p.x, p.y, p.radius * min(1f, p.life * 3),
             (p.color and 0xFFFFFF) or ((255 * min(1f, p.life * 3)).toInt() shl 24))
         for (t in toasts) text(c, t.text, t.x, t.y - 25, 31f, cyan)
+        for (g in hitGlows) circle(c, g.x, g.y, g.radius * (1 - g.life / .15f), 0x6653E3E8)
         if (laserLife > 0) {
-            paint.strokeWidth = 12f * laserLife; paint.color = Color.WHITE
-            c.drawLine(0f, laserY, 720f, laserY, paint)
+            paint.strokeWidth = 4f; paint.color = Color.WHITE
+            for ((x, y) in laserBeams) c.drawLine(x, y, x, Rules.PADDLE_Y.toFloat() - 20, paint)
         }
     }
+
     override fun performClick(): Boolean { super.performClick(); return true }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!foreground) return false
+        fun control(index: Int) {
+            val x = (event.getX(index) - ox) / scale
+            dragDistance = max(dragDistance, abs(x - downX))
+            engine?.movePaddle(x.toDouble())
+        }
         val x = (event.x - ox) / scale; val y = (event.y - oy) / scale
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pressed = buttons.lastOrNull { it.bounds.contains(x, y) }
-                if (pressed == null && screen == Screen.PLAY && !paused && engine?.phase == Phase.AIM && y in 110f..1100f) {
-                    dragging = true; target = Vec(x.toDouble(), y.toDouble())
+                if (pressed == null && screen == Screen.PLAY && !paused && engine?.phase in listOf(Phase.READY, Phase.PLAYING) && y > 140) {
+                    activePointer = event.getPointerId(0); dragging = true; downX = x; dragDistance = 0f; control(0)
                 }
             }
-            MotionEvent.ACTION_MOVE -> if (dragging) target = Vec(x.toDouble(), y.toDouble())
+            MotionEvent.ACTION_MOVE -> if (dragging) {
+                val index = event.findPointerIndex(activePointer)
+                if (index >= 0) control(index)
+            }
+            MotionEvent.ACTION_POINTER_UP -> if (event.getPointerId(event.actionIndex) == activePointer) {
+                dragging = false; activePointer = -1
+            }
             MotionEvent.ACTION_UP -> {
                 val button = pressed; pressed = null
                 if (button != null && button.bounds.contains(x, y)) { performClick(); button.action() }
-                else if (dragging) {
-                    target = Vec(x.toDouble(), y.toDouble())
-                    if (engine?.shoot(target) == true) { observedPhase = Phase.FLIGHT; save() }
+                else if (dragging && dragDistance < 18) {
+                    if (engine?.launch() == true) { observedPhase = engine?.phase; save() }
                 }
-                dragging = false
+                dragging = false; activePointer = -1
             }
-            MotionEvent.ACTION_CANCEL -> { dragging = false; pressed = null }
+            MotionEvent.ACTION_CANCEL -> { dragging = false; pressed = null; activePointer = -1 }
         }
         invalidate(); return true
     }

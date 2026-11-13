@@ -1,41 +1,46 @@
 package com.kimizha.minigame.core
 
 import java.util.Random
-import kotlin.math.*
+import kotlin.math.PI
 
+data class ObstacleSpec(val x: Double, val y: Double, val w: Double, val h: Double, val kind: Kind, val angle: Double = 0.0)
+data class LevelSpec(val pattern: PixelPattern, val obstacles: List<ObstacleSpec>)
 object Levels {
     const val COUNT = 30
-    val names = listOf("初见星光", "双翼", "微笑", "阶梯", "星环", "绕行", "回声", "双岛", "门廊", "流线",
-        "破壁", "解锁", "双门", "跃迁", "裂隙", "惊喜", "花火", "星阵", "光束", "涟漪",
-        "折线", "交响", "棱镜", "星核", "银河", "流动", "潮汐", "巡航", "星海", "终章")
-    fun build(level: Int, infinite: Boolean = false, seed: Long = level.toLong()): MutableList<Body> {
+    const val CELL = 20.0
+    val palette = mapOf('r' to 0xFFFF637F.toInt(), 'p' to 0xFFFF9BCB.toInt(), 'o' to 0xFFFFAD68.toInt(),
+        'y' to 0xFFFFE27A.toInt(), 'g' to 0xFF83E7A4.toInt(), 't' to 0xFF50DDE5.toInt(),
+        'b' to 0xFF76A5FF.toInt(), 'v' to 0xFFB39AFF.toInt(), 'w' to 0xFFEFF5FD.toInt(), 'k' to 0xFF354B7D.toInt())
+    val names = LevelPatterns.all.map { it.name }
+    fun spec(level: Int, infinite: Boolean = false, seed: Long = level.toLong()): LevelSpec {
         val random = Random(seed)
-        val result = mutableListOf<Body>()
-        var id = 0
-        val rows = if (infinite) 6 else (2 + level / 5).coerceAtMost(7)
-        val difficulty = level.coerceAtMost(30)
-        for (r in 0 until rows) for (c in 0..8) {
-            val include = if (infinite) random.nextDouble() > .24 else when (level % 5) {
-                1 -> c in 1..7 && (r + c) % 3 != 0
-                2 -> abs(c - 4) >= r % 3
-                3 -> (c + r) % 2 == 0 || r == rows - 1
-                4 -> c in (r % 3)..(8 - r % 3)
-                else -> c == 1 || c == 7 || r == 0 || r == rows - 1
-            }
-            if (!include) continue
-            val hp = if (difficulty <= 5) 1 + (r + c) % 3
-                else if (difficulty <= 15) 2 + (r * 3 + c + difficulty) % 8
-                else 3 + (r * 5 + c * 2 + difficulty) % (difficulty - 5)
-            result.add(Body(id++, Vec(52.0 + c * 77, 175.0 + r * 66), Vec(33.0, 27.0), hp, Kind.BLOCK))
-        }
-        // All barriers have broad side openings: never form a closed enclosure.
+        val pattern = LevelPatterns.all[if (infinite) random.nextInt(COUNT) else (level - 1).coerceIn(0, COUNT - 1)]
+        val obstacles = mutableListOf<ObstacleSpec>()
         if (level >= 6) {
-            result.add(Body(id++, Vec(260.0, 720.0), Vec(85.0, 12.0), -1, Kind.WALL))
-            if (level % 2 == 0) result.add(Body(id++, Vec(500.0, 820.0), Vec(12.0, 65.0), -1, Kind.WALL))
+            // Side guides have open tops and bottoms; no unbreakable perimeter encloses a target.
+            obstacles.add(ObstacleSpec(20.0, 415.0, 12.0, 210.0, Kind.WALL))
+            obstacles.add(ObstacleSpec(700.0, 415.0, 12.0, 210.0, Kind.WALL))
+            obstacles.add(ObstacleSpec(360.0, 770.0, 140.0, 16.0, Kind.WALL))
         }
-        if (level >= 11) result.add(Body(id++, Vec(470.0, 710.0), Vec(72.0, 15.0), 3 + level / 3, Kind.BREAKABLE))
-        if (level >= 21) result.add(Body(id++, Vec(200.0, 900.0), Vec(83.0, 10.0), -1, Kind.PADDLE, -PI / 5))
-        if (level >= 26) result.add(Body(id, Vec(410.0, 930.0), Vec(60.0, 12.0), -1, Kind.MOVING))
-        return result
+        if (level >= 11) obstacles.add(ObstacleSpec(505.0, 790.0, 86.0, 18.0, Kind.BREAKABLE))
+        if (level >= 21) {
+            obstacles.add(ObstacleSpec(165.0, 850.0, 96.0, 14.0, Kind.PADDLE, -PI / 5))
+            obstacles.add(ObstacleSpec(555.0, 870.0, 96.0, 14.0, Kind.PADDLE, PI / 5))
+        }
+        if (level >= 26) obstacles.add(ObstacleSpec(360.0, 935.0, 90.0, 16.0, Kind.MOVING))
+        return LevelSpec(pattern, obstacles)
+    }
+    fun build(level: Int, infinite: Boolean = false, seed: Long = level.toLong()): MutableList<Body> {
+        val spec = spec(level, infinite, seed)
+        val bodies = mutableListOf<Body>()
+        var id = 0
+        for ((r, row) in spec.pattern.rows.withIndex()) for ((c, pixel) in row.withIndex()) {
+            val color = palette[pixel] ?: continue
+            bodies.add(Body(id++, Vec(50.0 + c * CELL, 180.0 + r * CELL), Vec(9.0, 9.0), Kind.BLOCK, color))
+        }
+        for (o in spec.obstacles) bodies.add(Body(id++, Vec(o.x, o.y), Vec(o.w / 2, o.h / 2), o.kind,
+            color = if (o.kind == Kind.BREAKABLE) 0xFFC0CAD8.toInt() else 0xFFE2EBF5.toInt(),
+            durability = if (o.kind == Kind.BREAKABLE) 3 else 0, angle = o.angle))
+        return bodies
     }
 }

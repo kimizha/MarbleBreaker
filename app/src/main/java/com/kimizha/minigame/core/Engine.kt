@@ -4,198 +4,225 @@ import java.util.Random
 import kotlin.math.*
 
 class Engine(var level: Int = 1, var infinite: Boolean = false, val seed: Long = level.toLong()) {
-    var phase = Phase.AIM
+    var phase = Phase.READY
     var bodies = Levels.build(level, infinite, seed)
     val balls = mutableListOf<Ball>()
     val pickups = mutableListOf<Pickup>()
     val events = mutableListOf<Event>()
-    var stock = 3
-    var roundStock = 3
+    val paddle = Paddle()
+    var lives = 3
     var score = 0
-    var rounds = 0
-    var launcher = Vec(360.0, Rules.BOTTOM - 12.0)
-    var direction = Vec(0.0, -Rules.SPEED)
+    var serves = 0
     var elapsed = 0.0
-    var flight = 0.0
-    var queue = 0
-    var shotClock = 0.0
     var nextId = 1
-    var firstReturn = -1.0
     var combo = 0
-    var effectExplosion = false
-    var effectPierce = false
-    var effectDamage = false
-    var effectSlow = false
+    var comboTime = 0.0
+    var laserClock = 0.0
+    var accumulator = 0.0
     private val grid = SpatialGrid()
-    private var accumulator = 0.0
-
+    private var gridDirty = true
+    private val moving get() = bodies.any { it.kind == Kind.MOVING }
     val remaining get() = bodies.count { it.target && it.alive }
-    val maxRounds get() = if (infinite) 100 else 55 + level
-    fun shoot(target: Vec): Boolean {
-        if (phase != Phase.AIM) return false
-        direction = Physics.aim(launcher, target)
-        roundStock = stock; queue = roundStock; rounds++
-        shotClock = 0.0; flight = 0.0; combo = 0; firstReturn = -1.0
-        effectExplosion = false; effectPierce = false; effectDamage = false; effectSlow = false
-        phase = Phase.FLIGHT
+    init { readyBall() }
+
+    private fun readyBall() {
+        balls.add(Ball(nextId++, Vec(paddle.x, heldY()), Vec(0.0, 0.0), held = true))
+    }
+    private fun heldY() = Rules.PADDLE_Y - Rules.PADDLE_HALF_HEIGHT - Rules.RADIUS - 1
+    fun movePaddle(x: Double) = paddle.moveTo(x)
+    fun launch(): Boolean {
+        if (phase != Phase.READY && phase != Phase.PLAYING) return false
+        val held = balls.filter { it.held }
+        if (held.isEmpty()) return false
+        if (phase == Phase.READY) { serves++; phase = Phase.PLAYING }
+        held.forEachIndexed { index, ball ->
+            ball.held = false; ball.holdTime = 0.0
+            ball.vel = Vec(sin(.22 + index * .17), -abs(cos(.22 + index * .17))).unit() * Rules.SPEED
+        }
+        events.add(Event("shot", Vec(paddle.x, heldY())))
         return true
     }
     fun advance(delta: Double) {
-        if (phase != Phase.FLIGHT) return
-        accumulator += delta.coerceIn(0.0, 0.08)
-        while (accumulator >= Rules.STEP && phase == Phase.FLIGHT) {
-            step(Rules.STEP); accumulator -= Rules.STEP
+        if (phase == Phase.WON || phase == Phase.LOST) return
+        accumulator += delta.coerceIn(0.0, .08)
+        while (accumulator >= Rules.STEP) {
+            accumulator -= Rules.STEP; step(Rules.STEP)
+            if (phase == Phase.WON || phase == Phase.LOST) { accumulator = 0.0; break }
         }
     }
     fun drainEvents(): List<Event> { val copy = events.toList(); events.clear(); return copy }
-    private fun spawn() {
-        val b = Ball(nextId++, launcher.copy(), direction.copy())
-        b.explosion = if (effectExplosion) 5 else 0
-        b.pierce = if (effectPierce) 8 else 0
-        b.damage = if (effectDamage) 12 else 0
-        if (effectSlow) { b.slow = 8.0; b.vel = b.vel * .65 }
-        balls.add(b); events.add(Event("shot", launcher.copy()))
-    }
+    fun invalidateGrid() { gridDirty = true }
     fun step(dt: Double) {
-        if (phase != Phase.FLIGHT) return
-        flight += dt; elapsed += dt
-        shotClock -= dt
-        while (queue > 0 && shotClock <= 0) { spawn(); queue--; shotClock += Rules.SHOT_INTERVAL }
-        for (o in bodies) if (o.kind == Kind.MOVING) o.vx = 75.0 * cos(elapsed * .65)
-        grid.rebuild(bodies)
-        val spawned = mutableListOf<Ball>()
-        // Snapshot permits bounded split creation without modifying the iteration list.
-        for (b in balls.toList()) {
-            b.previous = b.pos.copy()
-            b.age += dt; b.ignoreTime -= dt
-            if (b.slow > 0) { b.slow -= dt; if (b.slow <= 0) b.vel = b.vel.unit() * Rules.SPEED }
+        if (phase == Phase.WON || phase == Phase.LOST) return
+        val oldX = paddle.x
+        paddle.width = if (paddle.wideTime > 0) 250.0 else Rules.PADDLE_WIDTH
+        paddle.clamp()
+        val displacement = (paddle.targetX - paddle.x).coerceIn(-2400 * dt, 2400 * dt)
+        val paddleVx = displacement / dt
+        val player = Body(-1, Vec(paddle.x, Rules.PADDLE_Y), Vec(paddle.width / 2, Rules.PADDLE_HALF_HEIGHT), Kind.PADDLE, vx = paddleVx)
+        if (phase == Phase.READY) {
+            paddle.x += displacement
+            balls.forEach { it.pos = Vec(paddle.x + it.offset, heldY()) }
+            return
+        }
+        elapsed += dt
+        comboTime = max(0.0, comboTime - dt)
+        if (comboTime == 0.0) combo = 0
+        paddle.wideTime = max(0.0, paddle.wideTime - dt)
+        paddle.magnetTime = max(0.0, paddle.magnetTime - dt)
+        paddle.laserTime = max(0.0, paddle.laserTime - dt)
+        for (o in bodies) if (o.kind == Kind.MOVING) o.vx = 63.0 * cos(elapsed * .7)
+        if (gridDirty || moving) { grid.rebuild(bodies); gridDirty = false }
+        val additions = mutableListOf<Ball>()
+        val lost = mutableListOf<Ball>()
+        for (b in balls) {
+            if (b.held) {
+                b.offset = b.offset.coerceIn(-paddle.width / 2 + 10, paddle.width / 2 - 10)
+                b.pos = Vec(oldX + displacement + b.offset, heldY())
+                b.holdTime -= dt
+                if (b.holdTime <= 0 || paddle.magnetTime <= 0) {
+                    b.held = false; b.vel = Physics.paddleBounce(b.pos.x + 12, oldX + displacement, paddle.width)
+                }
+                continue
+            }
+            b.idleTime += dt
             var left = dt
             var contacts = 0
-            while (left > 1e-7 && contacts++ < 10 && b.pos.y < Rules.BOTTOM) {
+            while (left > 1e-7 && contacts < 12 && !b.held) {
                 var hit: Hit? = null
                 fun consider(h: Hit?) { if (h != null && h.time >= 0 && h.time <= left && (hit == null || h.time < hit!!.time)) hit = h }
-                val r = Rules.RADIUS
-                if (b.vel.x < -1e-9) consider(Hit(max(0.0, (r - b.pos.x) / b.vel.x), Vec(1.0, 0.0)))
-                if (b.vel.x > 1e-9) consider(Hit(max(0.0, (Rules.WIDTH - r - b.pos.x) / b.vel.x), Vec(-1.0, 0.0)))
-                if (b.vel.y < -1e-9) consider(Hit(max(0.0, (Rules.TOP + r - b.pos.y) / b.vel.y), Vec(0.0, 1.0)))
+                if (b.vel.x < -1e-9) consider(Hit(max(0.0, (Rules.RADIUS - b.pos.x) / b.vel.x), Vec(1.0, 0.0)))
+                if (b.vel.x > 1e-9) consider(Hit(max(0.0, (Rules.WIDTH - Rules.RADIUS - b.pos.x) / b.vel.x), Vec(-1.0, 0.0)))
+                if (b.vel.y < -1e-9) consider(Hit(max(0.0, (Rules.TOP + Rules.RADIUS - b.pos.y) / b.vel.y), Vec(0.0, 1.0)))
                 val end = b.pos + b.vel * left
-                for (body in grid.query(b.pos, end, r + 1.0)) if (body.alive &&
-                    !(b.ignored == body.id && b.ignoreTime > 0)) consider(Physics.sweep(b, body, left))
-                val h = hit
-                val old = b.pos.copy()
-                val travel = h?.time ?: left
-                b.pos = b.pos + b.vel * travel
-                for (p in pickups.toList()) if (Physics.segmentDistance(p.pos, old, b.pos) < r + 18) {
-                    pickups.remove(p); collect(p.power, b, p.pos, spawned)
+                for (body in grid.query(b.pos, end, Rules.RADIUS + 1)) if (body.alive)
+                    consider(Physics.sweep(b, body, left))
+                // Paddle is one-way: a ball already below it cannot be rescued through its underside.
+                player.center.x = oldX + paddleVx * (dt - left)
+                if (b.vel.y > 0 && b.pos.y <= Rules.PADDLE_Y - Rules.PADDLE_HALF_HEIGHT + .01) {
+                    val pHit = Physics.sweep(b, player, left)
+                    if (pHit != null && pHit.normal.y < -.15) consider(pHit)
                 }
-                if (h == null) { left = 0.0; break }
-                left -= travel
+                val h = hit
+                if (h == null) { b.pos = end; left = 0.0; break }
+                contacts++
+                b.pos = b.pos + b.vel * h.time; left -= h.time
                 val o = h.body
-                if (o != null && o.breakable) {
-                    val damage = if (b.damage > 0) { b.damage--; 2 } else 1
-                    hurt(o, damage)
-                    if (b.explosion > 0) {
-                        b.explosion--
-                        events.add(Event("explosion", b.pos.copy()))
-                        for (near in bodies) if (near.alive && near.breakable && near.id != o.id &&
-                            (near.center - b.pos).length() < 125) hurt(near, damage)
+                if (o === player) {
+                    val contactCenter = oldX + paddleVx * (dt - left)
+                    b.vel = Physics.paddleBounce(b.pos.x, contactCenter, paddle.width)
+                    b.pos.y = heldY()
+                    if (paddle.magnetTime > 0) {
+                        b.held = true; b.holdTime = 2.5
+                        b.offset = (b.pos.x - contactCenter).coerceIn(-paddle.width / 2 + 10, paddle.width / 2 - 10)
+                        b.vel = Vec(0.0, 0.0)
+                    }
+                } else {
+                    b.vel = Physics.reflect(b.vel, h.normal, Vec(o?.vx ?: 0.0, 0.0)).unit() * Rules.SPEED
+                    if (abs(b.vel.y) < Rules.SPEED * .10)
+                        b.vel = Vec(b.vel.x, if (b.vel.y < 0) -Rules.SPEED * .10 else Rules.SPEED * .10).unit() * Rules.SPEED
+                    b.pos = b.pos + h.normal * .2
+                    if (o?.breakable == true) {
+                        damage(o)
+                        if (o.target && b.splitCharges > 0) {
+                            b.splitCharges--
+                            for (angle in doubleArrayOf(-.35, .35)) if (balls.size + additions.size < Rules.MAX_BALLS)
+                                additions.add(newBall(b.pos + b.vel.unit() * 15.0, b.vel.rotate(angle)))
+                        }
                     }
                 }
-                if (o?.target == true && b.pierce > 0) {
-                    b.pierce--; b.ignored = o.id; b.ignoreTime = .14
-                    b.pos = b.pos + b.vel.unit() * .05
-                } else {
-                    b.vel = Physics.reflect(b.vel, h.normal, Vec(o?.vx ?: 0.0, 0.0))
-                    val speed = Rules.SPEED * if (b.slow > 0) .65 else 1.0
-                    b.vel = b.vel.unit() * speed
-                    // A shallow bounce is nudged away from horizontal to avoid endless lanes.
-                    if (abs(b.vel.y) < speed * .08) b.vel = Vec(b.vel.x, if (b.vel.y < 0) -speed * .08 else speed * .08).unit() * speed
-                    b.pos = b.pos + h.normal * .15
-                    events.add(Event("hit", b.pos.copy()))
-                }
+                b.idleTime = 0.0
+                events.add(Event("hit", b.pos.copy()))
             }
-            if (!b.pos.x.isFinite() || !b.pos.y.isFinite() || b.age > Rules.MAX_FLIGHT ||
-                b.pos.y >= Rules.BOTTOM || contacts > 10) {
-                if (firstReturn < 0) firstReturn = b.pos.x.takeIf { it.isFinite() }?.coerceIn(20.0, 700.0) ?: 360.0
-                balls.remove(b)
+            if (!b.pos.x.isFinite() || !b.pos.y.isFinite() || !b.vel.x.isFinite() || !b.vel.y.isFinite() || contacts >= 12) {
+                // Numerical recovery keeps the ball and life; it does not silently count a miss.
+                b.pos = Vec(paddle.x, heldY() - 16); b.vel = Vec(.3, -1.0).unit() * Rules.SPEED
+                events.add(Event("recover", b.pos.copy()))
             }
+            if (b.pos.y > Rules.BOTTOM + Rules.RADIUS) lost.add(b)
+            else if (b.idleTime > 18) { b.vel = Vec(b.vel.x + 60, -abs(b.vel.y) - 90).unit() * Rules.SPEED; b.idleTime = 0.0 }
         }
-        balls.addAll(spawned.take((Rules.MAX_BALLS - balls.size).coerceAtLeast(0)))
-        for (o in bodies) if (o.kind == Kind.MOVING) o.center.x = o.homeX + 115.0 * sin(elapsed * .65)
-        for (p in pickups) p.life += dt
-        pickups.removeAll { it.life > 100.0 }
-        if (remaining == 0) { phase = Phase.WON; balls.clear(); queue = 0; events.add(Event("win", Vec(360.0, 500.0))) }
-        else if ((queue == 0 && balls.isEmpty()) || flight > Rules.MAX_FLIGHT + roundStock * Rules.SHOT_INTERVAL) finishRound()
-        // Avoid unbounded event allocation if caller forgets to drain.
-        if (events.size > 1200) events.subList(0, events.size - 1200).clear()
+        balls.removeAll(lost.toSet())
+        balls.addAll(additions.take((Rules.MAX_BALLS - balls.size).coerceAtLeast(0)))
+        paddle.x = oldX + displacement; paddle.clamp()
+        for (o in bodies) if (o.kind == Kind.MOVING) o.center.x = o.homeX + 90 * sin(elapsed * .7)
+        updatePickups(dt, oldX, paddleVx)
+        if (paddle.laserTime > 0) {
+            laserClock -= dt
+            if (laserClock <= 0) { fireLaser(); laserClock = .5 }
+        }
+        if (remaining == 0) {
+            phase = Phase.WON; events.add(Event("win", Vec(360.0, 500.0))); balls.clear(); pickups.clear()
+        } else if (balls.isEmpty()) {
+            lives--; combo = 0; pickups.clear()
+            paddle.wideTime = 0.0; paddle.magnetTime = 0.0; paddle.laserTime = 0.0
+            paddle.width = Rules.PADDLE_WIDTH; paddle.clamp()
+            if (lives > 0) { phase = Phase.READY; readyBall(); events.add(Event("life", Vec(paddle.x, 950.0), "剩余 $lives 条生命")) }
+            else { phase = Phase.LOST; events.add(Event("life", Vec(paddle.x, 950.0), "生命已用尽")) }
+        }
+        if (events.size > 800) events.subList(0, events.size - 800).clear()
     }
-    private fun finishRound() {
-        queue = 0; balls.clear()
-        launcher.x = if (firstReturn >= 0) firstReturn else launcher.x
-        for (body in bodies) if (body.alive && body.breakable) body.center.y += 20.0
-        for (p in pickups) p.pos.y += 20.0
-        phase = if (rounds >= maxRounds || bodies.any { it.alive && it.target && it.center.y + it.half.y >= Rules.BOTTOM - 40 }) Phase.LOST else Phase.AIM
-        accumulator = 0.0
-        events.add(Event("round", launcher.copy()))
-    }
-    fun hurt(body: Body, damage: Int) {
+    fun damage(body: Body) {
         if (!body.alive || !body.breakable) return
-        body.hp = max(0, body.hp - damage)
-        score += damage * 2
-        if (body.hp == 0) {
-            score += 20; combo++
-            events.add(Event("break", body.center.copy(), if (combo >= 3) "${combo} 连击" else "", combo))
-            val rand = Random(seed xor (body.id.toLong() * 7919L))
-            if (body.target && (combo == 1 || rand.nextDouble() < .36)) {
-                val pool = if (level < 16 && !infinite) Power.entries.take(4) else Power.entries
-                val power = if (combo == 1) Power.PLUS1 else pool[rand.nextInt(pool.size)]
-                if (pickups.size < 80) pickups.add(Pickup(body.center.copy(), power))
+        if (body.kind == Kind.BREAKABLE) { body.durability--; if (body.durability > 0) return }
+        body.destroyed = true; gridDirty = true
+        score += if (body.target) 10 else 25
+        combo++; comboTime = 2.5
+        events.add(Event("break", body.center.copy(), if (combo >= 3) "$combo 连击" else "", combo, body.color))
+        if (body.target) {
+            val random = Random(seed xor (body.id.toLong() * 7919L))
+            if (pickups.size < 80 && (random.nextDouble() < .17 || bodies.count { it.target && it.destroyed } == 1)) {
+                val power = if (bodies.count { it.target && it.destroyed } == 1) Power.PLUS1 else Power.entries[random.nextInt(Power.entries.size)]
+                pickups.add(Pickup(body.center.copy(), power))
             }
         }
     }
-    fun collect(power: Power, ball: Ball, at: Vec = ball.pos, additions: MutableList<Ball> = mutableListOf()) {
+    private fun updatePickups(dt: Double, oldX: Double, vx: Double) {
+        val caught = mutableListOf<Pickup>()
+        for (p in pickups) {
+            val oldY = p.pos.y; p.pos.y += Rules.PICKUP_SPEED * dt; p.age += dt
+            val catchY = Rules.PADDLE_Y - Rules.PADDLE_HALF_HEIGHT - 16
+            if (oldY <= catchY && p.pos.y >= catchY) {
+                val t = (catchY - oldY) / Rules.PICKUP_SPEED
+                if (abs(p.pos.x - (oldX + vx * t)) <= paddle.width / 2 + 16) caught.add(p)
+            }
+        }
+        pickups.removeAll(caught.toSet())
+        pickups.removeAll { it.pos.y > Rules.BOTTOM + 20 }
+        caught.forEach { collect(it.power) }
+    }
+    fun collect(power: Power) {
         when (power) {
-            Power.PLUS1 -> stock = min(Rules.MAX_BALLS, stock + 1)
-            Power.PLUS3 -> stock = min(Rules.MAX_BALLS, stock + 3)
-            Power.PLUS5 -> stock = min(Rules.MAX_BALLS, stock + 5)
-            Power.DOUBLE -> stock = min(Rules.MAX_BALLS, stock * 2)
-            Power.EXPLODE -> { effectExplosion = true; balls.forEach { it.explosion = 5 }; ball.explosion = 5 }
-            Power.PIERCE -> { effectPierce = true; balls.forEach { it.pierce = 8 }; ball.pierce = 8 }
-            Power.DAMAGE -> { effectDamage = true; balls.forEach { it.damage = 12 }; ball.damage = 12 }
-            Power.SLOW -> {
-                effectSlow = true
-                (balls + ball).distinctBy { it.id }.forEach { it.slow = 8.0; it.vel = it.vel.unit() * (Rules.SPEED * .65) }
-            }
-            Power.SPLIT -> if (balls.size + additions.size + queue <= Rules.MAX_BALLS - 2) {
-                for (angle in listOf(-.38, .38)) additions.add(Ball(nextId++, ball.pos.copy(), ball.vel.rotate(angle), age = ball.age))
-            }
-            Power.LASER -> {
-                val row = bodies.filter { it.target && it.alive }.minByOrNull { abs(it.center.y - at.y) }?.center?.y
-                if (row != null) {
-                    bodies.filter { it.target && it.alive && abs(it.center.y - row) < 20 }.forEach { hurt(it, it.hp) }
-                    events.add(Event("laser", Vec(at.x, row)))
-                }
-            }
+            Power.PLUS1 -> addBalls(1)
+            Power.PLUS3 -> addBalls(3)
+            Power.PLUS5 -> addBalls(5)
+            Power.DOUBLE -> addBalls(balls.size)
+            Power.SPLIT -> balls.forEach { it.splitCharges = 1 }
+            Power.WIDE -> { paddle.wideTime = 16.0; paddle.width = 250.0; paddle.clamp() }
+            Power.MAGNET -> paddle.magnetTime = 12.0
+            Power.LASER -> { paddle.laserTime = 10.0; laserClock = 0.0 }
         }
-        events.add(Event("power", at.copy(), power.label))
+        events.add(Event("power", Vec(paddle.x, 980.0), power.label, color = power.color))
     }
-    /** Same narrow phase as the game; preview never changes game state. */
-    fun preview(target: Vec): List<Vec> {
-        val b = Ball(-1, launcher.copy(), Physics.aim(launcher, target))
-        val points = mutableListOf(b.pos.copy())
-        repeat(3) {
-            var hit: Hit? = null
-            fun consider(h: Hit?) { if (h != null && h.time > 1e-5 && (hit == null || h.time < hit!!.time)) hit = h }
-            if (b.vel.x < 0) consider(Hit((Rules.RADIUS - b.pos.x) / b.vel.x, Vec(1.0, 0.0)))
-            if (b.vel.x > 0) consider(Hit((Rules.WIDTH - Rules.RADIUS - b.pos.x) / b.vel.x, Vec(-1.0, 0.0)))
-            if (b.vel.y < 0) consider(Hit((Rules.TOP + Rules.RADIUS - b.pos.y) / b.vel.y, Vec(0.0, 1.0)))
-            for (body in bodies) if (body.alive) consider(Physics.sweep(b, body, 2.0))
-            val h = hit
-            if (h == null) { points.add(b.pos + b.vel * .5); return points }
-            b.pos = b.pos + b.vel * h.time; points.add(b.pos.copy())
-            b.vel = Physics.reflect(b.vel, h.normal); b.pos = b.pos + h.normal * .2
-            if (h.body?.breakable == true) return points
+    private fun newBall(preferred: Vec, velocity: Vec): Ball {
+        val safe = preferred.x in 10.0..710.0 && preferred.y in (Rules.TOP + 10)..(Rules.PADDLE_Y - 18) &&
+            bodies.none { it.alive && Physics.overlaps(preferred, it) }
+        return Ball(nextId++, if (safe) preferred.copy() else Vec(paddle.x, heldY() - 12), velocity.unit() * Rules.SPEED)
+    }
+    fun addBalls(count: Int) {
+        val actual = count.coerceIn(0, Rules.MAX_BALLS - balls.size)
+        repeat(actual) { index ->
+            val angle = (((nextId * 47 + index * 29) % 121) - 60) * PI / 180
+            val x = (paddle.x + (index % 7 - 3) * 8).coerceIn(10.0, 710.0)
+            balls.add(newBall(Vec(x, heldY() - 12), Vec(sin(angle), -cos(angle))))
         }
-        return points
+    }
+    private fun fireLaser() {
+        for (x in doubleArrayOf(paddle.x - paddle.width / 2 + 15, paddle.x + paddle.width / 2 - 15)) {
+            val obstacle = bodies.filter { it.alive && abs(x - it.center.x) <= abs(cos(it.angle)) * it.half.x + abs(sin(it.angle)) * it.half.y }
+                .maxByOrNull { it.center.y }
+            if (obstacle?.breakable == true) damage(obstacle)
+            events.add(Event("laser", Vec(x, obstacle?.center?.y ?: Rules.TOP)))
+        }
     }
 }
