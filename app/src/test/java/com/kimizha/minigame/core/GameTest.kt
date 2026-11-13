@@ -73,7 +73,10 @@ class GameTest {
         e.collect(Power.SLOW, b); assertEquals(572.0, b.vel.length(), .001)
         val extras = mutableListOf<Ball>()
         repeat(200) { e.collect(Power.SPLIT, b, additions = extras) }
-        assertTrue(e.balls.size + extras.size <= 300)
+        assertTrue(e.balls.size + extras.size <= Rules.MAX_BALLS)
+        extras.clear(); e.queue = Rules.MAX_BALLS - e.balls.size
+        e.collect(Power.SPLIT, b, additions = extras)
+        assertTrue(extras.isEmpty())
     }
     @Test fun laserClearsOnlyOrdinaryBlocksInItsRow() {
         val e = Engine(16)

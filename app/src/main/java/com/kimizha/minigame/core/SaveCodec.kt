@@ -68,7 +68,7 @@ object SaveCodec {
                     repeat(d.count(200)) {
                         bodies.add(Body(d.readInt(), d.vec(), d.vec(), d.readInt(), Kind.entries[d.readInt()], d.finite(), d.finite(), d.finite()))
                     }
-                    repeat(d.count(300)) {
+                    repeat(d.count(Rules.MAX_BALLS)) {
                         balls.add(Ball(d.readInt(), d.vec(), d.vec(), d.finite(), d.readInt(), d.readInt(), d.readInt(),
                             d.finite(), d.readBoolean(), d.readInt(), d.finite()))
                     }

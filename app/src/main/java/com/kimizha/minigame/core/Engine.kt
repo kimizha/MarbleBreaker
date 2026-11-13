@@ -120,7 +120,7 @@ class Engine(var level: Int = 1, var infinite: Boolean = false, val seed: Long =
                 balls.remove(b)
             }
         }
-        balls.addAll(spawned.take((Rules.MAX_BALLS * 2 - balls.size).coerceAtLeast(0)))
+        balls.addAll(spawned.take((Rules.MAX_BALLS - balls.size).coerceAtLeast(0)))
         for (o in bodies) if (o.kind == Kind.MOVING) o.center.x = o.homeX + 115.0 * sin(elapsed * .65)
         for (p in pickups) p.life += dt
         pickups.removeAll { it.life > 100.0 }
@@ -166,7 +166,7 @@ class Engine(var level: Int = 1, var infinite: Boolean = false, val seed: Long =
                 effectSlow = true
                 (balls + ball).distinctBy { it.id }.forEach { it.slow = 8.0; it.vel = it.vel.unit() * (Rules.SPEED * .65) }
             }
-            Power.SPLIT -> if (balls.size + additions.size <= Rules.MAX_BALLS * 2 - 2) {
+            Power.SPLIT -> if (balls.size + additions.size + queue <= Rules.MAX_BALLS - 2) {
                 for (angle in listOf(-.38, .38)) additions.add(Ball(nextId++, ball.pos.copy(), ball.vel.rotate(angle), age = ball.age))
             }
             Power.LASER -> {

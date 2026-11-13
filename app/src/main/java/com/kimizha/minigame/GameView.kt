@@ -52,6 +52,9 @@ class GameView(context: Context) : View(context) {
     private val muted = Color.rgb(140, 165, 197)
     private val colors = intArrayOf(0xFF53E3E8.toInt(), 0xFF75A8FF.toInt(), 0xFFB693FF.toInt(),
         0xFFFF718D.toInt(), 0xFFFFB76B.toInt(), 0xFFBEEA77.toInt())
+    private val powerColors = intArrayOf(0xFF53E3E8.toInt(), 0xFF76E89B.toInt(), 0xFFC7EB73.toInt(),
+        0xFFFFD36E.toInt(), 0xFFFF916B.toInt(), 0xFFB693FF.toInt(), 0xFFFF84D5.toInt(),
+        0xFFFF647C.toInt(), 0xFF75A8FF.toInt(), 0xFFBFD8F4.toInt())
     init {
         isFocusable = true
         contentDescription = "小游戏。按住游戏区域拖动瞄准，松手发射弹珠。"
@@ -232,7 +235,7 @@ class GameView(context: Context) : View(context) {
             c.restore()
         }
         for (p in e.pickups) {
-            val col = colors[p.power.ordinal % colors.size]
+            val col = powerColors[p.power.ordinal]
             val pulse = 1.0 + .13 * sin(animationTime * 5)
             circle(c, p.pos.x.toFloat(), p.pos.y.toFloat(), (26 * pulse).toFloat(), (col and 0x00FFFFFF) or 0x33000000)
             circle(c, p.pos.x.toFloat(), p.pos.y.toFloat(), 18f, col)
