@@ -27,7 +27,7 @@
 - 包名：com.kimizha.minigame；应用名称：小游戏。
 - Android 8.0 / API 26 起；compileSdk / targetSdk 36（Android 16）。
 - JDK 17、AGP 8.13.1、Kotlin 2.2.21、Gradle 8.13。
-- 无第三方运行时依赖；JUnit 4 用于纯 Kotlin 单元测试。
+- AndroidX Activity 处理系统返回手势；JUnit 4 用于纯 Kotlin 单元测试。
 - 唯一权限是可关闭的震动反馈所需 VIBRATE。
 - Canvas 自定义 View，竖屏，系统栏与刘海安全区域内等比显示。
 

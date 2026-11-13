@@ -14,4 +14,7 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
     buildTypes { getByName("release") { isMinifyEnabled = false } }
 }
-dependencies { testImplementation("junit:junit:4.13.2") }
+dependencies {
+    implementation("androidx.activity:activity-ktx:1.11.0")
+    testImplementation("junit:junit:4.13.2")
+}

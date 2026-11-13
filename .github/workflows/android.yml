@@ -41,6 +41,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Compile Kotlin, run unit tests, lint and build APK
         run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Print test and lint results
+        if: always()
+        run: python3 scripts/reports.py
       - name: Package APK and SHA-256
         shell: bash
         run: |
