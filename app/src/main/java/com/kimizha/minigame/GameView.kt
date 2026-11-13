@@ -106,6 +106,18 @@ class GameView(context: Context) : View(context) {
             processEvents()
         }
         if (foreground && !paused) animate(dt.toFloat())
+        val description = when (screen) {
+            Screen.HOME -> "小游戏 · 首页"
+            Screen.LEVELS -> "小游戏 · 关卡选择"
+            Screen.SETTINGS -> "小游戏 · 设置"
+            Screen.PLAY -> engine?.let { e ->
+                val state = if (paused) "暂停" else when (e.phase) {
+                    Phase.AIM -> "等待发射"; Phase.FLIGHT -> "弹珠飞行"; Phase.WON -> "通关"; Phase.LOST -> "失败"
+                }
+                "小游戏 · 游戏中；第 ${e.level} 关；回合 ${e.rounds}；弹珠 ${e.stock}；$state"
+            } ?: "小游戏"
+        }
+        if (contentDescription != description) contentDescription = description
         canvas.drawColor(navy)
         scale = min((width - insetLeft - insetRight) / 720f, (height - insetTop - insetBottom) / 1200f).coerceAtLeast(.01f)
         ox = insetLeft + (width - insetLeft - insetRight - 720 * scale) / 2
