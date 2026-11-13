@@ -391,6 +391,7 @@ class GameView(context: Context) : View(context) {
                 dragging = false; activePointer = -1
             }
             MotionEvent.ACTION_UP -> {
+                if (dragging) control(event.findPointerIndex(activePointer).coerceAtLeast(0))
                 val button = pressed; pressed = null
                 if (button != null && button.bounds.contains(x, y)) { performClick(); button.action() }
                 else if (dragging && dragDistance < 18) {
