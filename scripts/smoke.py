@@ -97,8 +97,67 @@ adb("shell", "am", "start", "-W", "-n", component)
 wait_ui("首页", "已解锁 27 关")
 tap_start()
 wait_ui("第 26 关", "生命 3", "弹珠 1", "等待开球")
+# Sudoku is a second game, with its own activity, board tools and save file.
+adb("shell", "input", "keyevent", "KEYCODE_BACK")
+adb("shell", "input", "keyevent", "KEYCODE_BACK")
+wait_ui("首页", "已解锁 27 关")
+
+def tap_design(x, y):
+    # Pixel 6 portrait: 720x1200 content is centered within system bar insets.
+    adb("shell", "input", "tap", str(round(width * x / 720)),
+        str(round(height / 2 + (y - 600) * width / 720)))
+
+tap_design(360, 499)
+wait_ui("数独 · 选择难度")
+tap_design(360, 638)
+state = wait_ui("数独 · 棋盘", "简单", "笔记关")
+empty = int(re.search(r"剩余 (\d+) 格", state).group(1))
+assert 35 <= empty <= 39, state
+# Mark a candidate, undo and redo it, then erase it and enter an actual digit.
+tap_design(82, 864)
+wait_ui("笔记开")
+tap_design(104, 976)
+wait_ui("候选 1", "数字 0", f"剩余 {empty} 格")
+tap_design(305, 864)
+wait_ui("候选 0")
+tap_design(416, 864)
+wait_ui("候选 1")
+tap_design(194, 864)
+wait_ui("候选 0")
+tap_design(82, 864)
+wait_ui("笔记关")
+tap_design(104, 976)
+wait_ui("数字 1", f"剩余 {empty - 1} 格")
+tap_design(305, 864)
+wait_ui("数字 0", f"剩余 {empty} 格")
+tap_design(527, 864)
+wait_ui("提示 1", f"剩余 {empty - 1} 格")
+tap_design(625, 69)
+wait_ui("数独 · 棋盘", "暂停")
+tap_design(360, 548)
+wait_ui("进行中")
+with (out / "sudoku.png").open("wb") as stream:
+    subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=stream, check=True)
+# Force-stop the entire app, launch through its home and continue the saved Sudoku.
+adb("shell", "am", "force-stop", "com.kimizha.minigame")
+adb("shell", "am", "start", "-W", "-n", component)
+wait_ui("首页", "已解锁 27 关")
+tap_design(360, 499)
+wait_ui("数独 · 选择难度", "可继续上局")
+tap_design(360, 518)
+wait_ui("数独 · 棋盘", "提示 1", f"剩余 {empty - 1} 格")
+adb("shell", "input", "keyevent", "KEYCODE_BACK")
+wait_ui("数独 · 选择难度")
+adb("shell", "input", "keyevent", "KEYCODE_BACK")
+wait_ui("首页", "已解锁 27 关")
+tap_start()
+wait_ui("第 26 关", "生命 3", "弹珠 1")
+logs = adb("logcat", "-d")
+assert "FATAL EXCEPTION" not in logs, logs[-8000:]
 message = ("PASS: installed, entered paddle game, dragged paddle, launched one main ball, "
            "backgrounded/resumed paused, restored saved serve after force-stop, and migrated original "
-           "v1 save preserving 27 unlocked levels while restarting level 26 with 3 lives and 1 ball.")
+           "v1 save preserving 27 unlocked levels while restarting level 26 with 3 lives and 1 ball. "
+           "Sudoku also passed generation, pencil notes, undo/redo, erase, digit entry, hint, pause, "
+           "force-stop save restoration, and return to the unchanged marble progress.")
 print(message, flush=True)
 (out / "result.txt").write_text(message + "\n")

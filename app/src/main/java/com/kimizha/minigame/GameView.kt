@@ -1,6 +1,8 @@
 package com.kimizha.minigame
 
 import android.content.Context
+import android.content.Intent
+import com.kimizha.minigame.sudoku.SudokuActivity
 import android.graphics.*
 import android.os.Build
 import android.os.VibrationEffect
@@ -172,14 +174,16 @@ class GameView(context: Context) : View(context) {
     }
     private fun home(c: Canvas) {
         decoration(c)
-        text(c, "MARBLE BREAKER", 360f, 145f, 25f, cyan)
+        text(c, "MINI GAMES", 360f, 145f, 25f, cyan)
         text(c, "小游戏", 360f, 240f, 76f)
-        text(c, "左右滑动，接住每一束星光", 360f, 298f, 29f, muted)
+        text(c, "挡板消砖 · 数独，随心切换", 360f, 298f, 29f, muted)
         for (i in 0..4) rect(c, 174f + i * 78, 370f + if (i % 2 == 0) 0 else 25,
             58f, 58f, colors[i], 14f)
-        circle(c, 360f, 495f + (sin(animationTime * 2) * 9).toFloat(), 13f, Color.WHITE)
+        button(c, "数独 · 独立游戏", 100f, 450f) {
+            context.startActivity(Intent(context, SudokuActivity::class.java))
+        }
         val active = engine?.phase in listOf(Phase.READY, Phase.PLAYING)
-        button(c, if (active) "继续游戏" else "开始游戏", 100f, 570f, primary = true) {
+        button(c, if (active) "挡板消砖 · 继续" else "挡板消砖 · 开始", 100f, 570f, primary = true) {
             if (active) { screen = Screen.PLAY; paused = false; clock = 0 } else start(progress.last)
         }
         button(c, "关卡选择 · ${progress.unlocked} / 30", 100f, 690f) { screen = Screen.LEVELS }
